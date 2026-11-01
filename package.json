@@ -1,0 +1,11 @@
+{
+  "name": "ideal-aura-v2",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Ideal Packages (Pvt) Ltd. — IDEAL AURA Attendance OS, Volume 2 (Vercel + Upstash Redis)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "node dev-server.js"
+  }
+}
