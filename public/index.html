@@ -3265,11 +3265,11 @@ const Emp = {
     const cols = ['Code', 'Name', 'FatherName', 'CNIC', 'DOB', 'Gender', 'Phone', 'Email', 'Address', 'City', 'Department', 'Designation', 'JoinDate', 'EmploymentType', 'Shift', 'BasicSalary', 'HouseRent', 'Conveyance', 'Medical', 'BankName', 'IBAN'];
     const m = UI.modal({
       title: 'Bulk import employees', size: 'lg', icon: 'upload',
-      body: `<p class="muted small mt-0">Upload a CSV or Excel (.xlsx) file. Required: <b>Name, CNIC, Department, Designation, JoinDate</b>. Department must match an existing department name or code; missing designations are created automatically. Rows with duplicate CNICs are skipped.</p>
+      body: `<p class="muted small mt-0">Upload a CSV or Excel (.xlsx) file. Required: <b>Name, Department, Designation</b>. CNIC and JoinDate can be left blank (blank JoinDate = today's date) and completed later from the employee profile. Department must match an existing department name or code; missing designations are created automatically. Rows with duplicate CNICs are skipped.</p>
         <div class="row mb-3"><button class="btn" id="ei-pick">${icon('upload')}Choose file…</button><button class="btn btn-ghost" id="ei-tpl">${icon('download')}Download template</button></div><div id="ei-prev"></div>`,
       footer: [{ label: 'Cancel', action: 'close' }, { label: 'Import valid rows', cls: 'btn-primary', icon: 'check', action: a => {
         const v = this._ei || []; if (!v.length) return UI.toast('Nothing valid to import.', 'warn');
-        v.forEach(x => { Store.db.employees.push(x); Store.log('Import employee', 'employees', `${x.code} ${x.name}`); });
+        v.forEach(x => { delete x._warn; Store.db.employees.push(x); Store.log('Import employee', 'employees', `${x.code} ${x.name}`); });
         Store.save(); a.close(); UI.toast(`${v.length} employee(s) imported.`, 'success'); App.refresh();
       } }]
     });
@@ -3280,25 +3280,26 @@ const Emp = {
       const ok = [], errs = []; const seenCnic = new Set(Store.db.employees.map(e => e.cnic));
       let nextN = +(Store.nextEmpCode().match(/(\d+)$/) || [0, 1])[1];
       rows.forEach(r => {
+        if (!String(r.name || '').trim() && !String(r.department || '').trim() && !String(r.cnic || '').trim()) return; // skip blank / total rows
         const e = []; const name = String(r.name || '').trim(); const cnic = formatCNIC(r.cnic);
         const dep = Store.db.departments.find(d => [d.name, d.code].map(x => String(x).toLowerCase()).includes(String(r.department || '').trim().toLowerCase()));
-        const join = excelDate(r.joindate); const dob = r.dob ? excelDate(r.dob) : '';
-        if (!name) e.push('Name missing'); if (!V.cnic(cnic)) e.push('Invalid CNIC'); else if (seenCnic.has(cnic)) e.push('Duplicate CNIC');
-        if (!dep) e.push(`Unknown department "${r.department}"`); if (!r.designation) e.push('Designation missing'); if (!join) e.push('Invalid JoinDate'); if (dob === null) e.push('Invalid DOB');
+        const joinRaw = excelDate(r.joindate); const join = joinRaw === '' ? today() : joinRaw; const warn = []; if (!cnic) warn.push('CNIC missing'); if (joinRaw === '') warn.push('Join date set to today'); const dob = r.dob ? excelDate(r.dob) : '';
+        if (!name) e.push('Name missing'); if (cnic && !V.cnic(cnic)) e.push('Invalid CNIC (format 12345-1234567-1)'); else if (cnic && seenCnic.has(cnic)) e.push('Duplicate CNIC');
+        if (!dep) e.push(`Unknown department "${r.department}"`); if (!r.designation) e.push('Designation missing'); if (joinRaw === null) e.push('Invalid JoinDate (use DD-MM-YYYY)'); if (dob === null) e.push('Invalid DOB');
         if (r.email && !V.email(r.email)) e.push('Invalid email');
         const nums = ['basicsalary', 'houserent', 'conveyance', 'medical'].map(k => r[k] === '' || r[k] === undefined ? 0 : Number(String(r[k]).replace(/,/g, '')));
         if (nums.some(n => isNaN(n) || n < 0)) e.push('Invalid salary amount');
         if (e.length) return errs.push([r._row, name || '-', e.join('; ')]);
-        seenCnic.add(cnic);
+        if (cnic) seenCnic.add(cnic);
         let ds = Store.db.designations.find(x => x.name.toLowerCase() === String(r.designation).trim().toLowerCase());
         if (!ds) { ds = { id: uid('dsg'), name: String(r.designation).trim(), deptId: dep.id, grade: '' }; Store.db.designations.push(ds); }
         const sh = Store.db.shifts.find(s => s.code.toLowerCase() === String(r.shift || '').toLowerCase()) || Store.db.shifts[0];
         let code = String(r.code || '').trim(); if (!code || Store.db.employees.some(x => x.code === code) || ok.some(x => x.code === code)) code = (S().empCodePrefix || 'IP-') + String(nextN++).padStart(4, '0');
-        ok.push({ id: uid('emp'), code, name, fatherName: String(r.fathername || ''), cnic, dob: dob || '', gender: /^f/i.test(r.gender) ? 'Female' : /^m/i.test(r.gender) ? 'Male' : '', maritalStatus: '', phone: String(r.phone || ''), email: String(r.email || ''), address: String(r.address || ''), city: String(r.city || ''), emergency: {}, deptId: dep.id, desigId: ds.id, joinDate: join, employmentType: EMP_TYPES.find(t => t.toLowerCase() === String(r.employmenttype || '').toLowerCase()) || 'Permanent', status: 'Active', managerId: null, shiftId: sh?.id || null, rotationId: null, shiftHist: [], salary: { basic: nums[0], allowances: [{ name: 'House Rent Allowance', amount: nums[1] }, { name: 'Conveyance Allowance', amount: nums[2] }, { name: 'Medical Allowance', amount: nums[3] }], deductions: [], tax: 0, otEligible: true, paymentMode: r.iban ? 'Bank' : 'Cash' }, bank: { name: String(r.bankname || ''), title: name, iban: String(r.iban || '') }, photo: null, documents: [], history: [{ ts: new Date().toISOString(), by: Auth.user.username, action: 'Imported', details: f.name }], leaveQuota: {}, createdAt: new Date().toISOString() });
+        ok.push({ id: uid('emp'), code, name, fatherName: String(r.fathername || ''), cnic, dob: dob || '', gender: /^f/i.test(r.gender) ? 'Female' : /^m/i.test(r.gender) ? 'Male' : '', maritalStatus: '', phone: String(r.phone || ''), email: String(r.email || ''), address: String(r.address || ''), city: String(r.city || ''), emergency: {}, deptId: dep.id, desigId: ds.id, joinDate: join, employmentType: EMP_TYPES.find(t => t.toLowerCase() === String(r.employmenttype || '').toLowerCase()) || 'Permanent', status: 'Active', managerId: null, shiftId: sh?.id || null, rotationId: null, shiftHist: [], salary: { basic: nums[0], allowances: [{ name: 'House Rent Allowance', amount: nums[1] }, { name: 'Conveyance Allowance', amount: nums[2] }, { name: 'Medical Allowance', amount: nums[3] }], deductions: [], tax: 0, otEligible: true, paymentMode: r.iban ? 'Bank' : 'Cash' }, bank: { name: String(r.bankname || ''), title: name, iban: String(r.iban || '') }, photo: null, documents: [], history: [{ ts: new Date().toISOString(), by: Auth.user.username, action: 'Imported', details: f.name + (warn.length ? ' — ' + warn.join(', ') : '') }], _warn: warn.join(', '), leaveQuota: {}, createdAt: new Date().toISOString() });
       });
       this._ei = ok;
       $('#ei-prev', m.el).innerHTML = `<div class="row mb-2">${UI.badge(ok.length + ' ready to import', 'green')} ${UI.badge(errs.length + ' rejected', errs.length ? 'red' : 'gray')}</div>
-        <div class="tbl-wrap" style="max-height:240px"><table class="tbl compact"><thead><tr><th>Code</th><th>Name</th><th>CNIC</th><th>Department</th><th>Designation</th><th>Joining</th></tr></thead><tbody>${ok.slice(0, 200).map(e => `<tr><td>${esc(e.code)}</td><td>${esc(e.name)}</td><td>${esc(e.cnic)}</td><td>${esc(Store.deptName(e.deptId))}</td><td>${esc(Store.desigName(e.desigId))}</td><td>${fmtDate(e.joinDate)}</td></tr>`).join('')}</tbody></table></div>
+        <div class="tbl-wrap" style="max-height:240px"><table class="tbl compact"><thead><tr><th>Code</th><th>Name</th><th>CNIC</th><th>Department</th><th>Designation</th><th>Joining</th><th>Note</th></tr></thead><tbody>${ok.slice(0, 200).map(e => `<tr><td>${esc(e.code)}</td><td>${esc(e.name)}</td><td>${esc(e.cnic || '—')}</td><td>${esc(Store.deptName(e.deptId))}</td><td>${esc(Store.desigName(e.desigId))}</td><td>${fmtDate(e.joinDate)}</td><td style="color:var(--warning,#d9a400)">${esc(e._warn || '')}</td></tr>`).join('')}</tbody></table></div>
         ${errs.length ? `<table class="tbl compact mt-2"><thead><tr><th>Row</th><th>Name</th><th>Problem</th></tr></thead><tbody>${errs.map(e => `<tr><td>${e[0]}</td><td>${esc(e[1])}</td><td style="color:var(--danger)">${esc(e[2])}</td></tr>`).join('')}</tbody></table>` : ''}`;
     };
   },
@@ -3387,13 +3388,13 @@ Pages.employees = {
           <div class="form-grid c3">
           ${F.input('code', 'Employee ID', { value: e.code, required: true, hint: 'Auto-generated; editable.' })}
           ${F.input('name', 'Full name', { value: e.name, required: true })}
-          ${F.input('fatherName', 'Father / husband name', { value: e.fatherName, required: true })}
-          ${F.input('cnic', 'CNIC number', { value: e.cnic, required: true, placeholder: '35202-1234567-1', attrs: 'inputmode="numeric" maxlength="15"', err: 'Format: 12345-1234567-1' })}
+          ${F.input('fatherName', 'Father / husband name', { value: e.fatherName })}
+          ${F.input('cnic', 'CNIC number', { value: e.cnic, hint: 'Leave blank if not available yet.', placeholder: '35202-1234567-1', attrs: 'inputmode="numeric" maxlength="15"', err: 'Format: 12345-1234567-1' })}
           ${F.input('dob', 'Date of birth', { type: 'date', value: e.dob, attrs: `max="${today()}"` })}
           ${F.select('gender', 'Gender', ['Male', 'Female', 'Other'], { value: e.gender, placeholder: 'Select' })}
           ${F.select('maritalStatus', 'Marital status', ['Single', 'Married', 'Widowed', 'Divorced'], { value: e.maritalStatus, placeholder: 'Select' })}
           ${F.select('bloodGroup', 'Blood group', ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'], { value: e.bloodGroup, placeholder: 'Select' })}
-          ${F.input('phone', 'Mobile number', { value: e.phone, required: true, placeholder: '0300-1234567', err: 'Enter a valid Pakistani number, e.g. 0300-1234567' })}
+          ${F.input('phone', 'Mobile number', { value: e.phone, placeholder: '0300-1234567', err: 'Enter a valid Pakistani number, e.g. 0300-1234567' })}
           ${F.input('email', 'Email address', { type: 'email', value: e.email, err: 'Enter a valid email' })}
           ${F.input('city', 'City', { value: e.city })}
           ${F.input('address', 'Residential address', { value: e.address, full: true })}
@@ -3440,8 +3441,8 @@ Pages.employees = {
     $('#ef-save').onclick = async () => {
       const d = F.read(form);
       const rules = {
-        code: v => !v ? 'Employee ID is required.' : null, name: v => !v ? 'Full name is required.' : v.length < 3 ? 'Name looks too short.' : null, fatherName: F.req('Father / husband name'),
-        cnic: v => !V.cnic(v) ? 'CNIC format must be 12345-1234567-1' : null, phone: v => !v ? 'Mobile number is required.' : !V.phone(v) ? 'Enter a valid Pakistani number, e.g. 0300-1234567' : null,
+        code: v => !v ? 'Employee ID is required.' : null, name: v => !v ? 'Full name is required.' : v.length < 3 ? 'Name looks too short.' : null, 
+        cnic: v => v && !V.cnic(v) ? 'CNIC format must be 12345-1234567-1' : null, phone: v => v && !V.phone(v) ? 'Enter a valid Pakistani number, e.g. 0300-1234567' : null,
         email: v => v && !V.email(v) ? 'Enter a valid email address.' : null, deptId: F.req('Department'), desigId: F.req('Designation'),
         joinDate: v => !D.valid(v) ? 'Valid joining date required.' : d.dob && v <= d.dob ? 'Joining date must be after date of birth.' : null,
         dob: v => v && (!D.valid(v) || D.age(v, today()) < 14) ? 'Employee must be at least 14 years old.' : null,
